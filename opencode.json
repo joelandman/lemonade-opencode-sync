@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["lemonade-models"],
+  "provider": {
+    "lemonade": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Lemonade Models",
+      "options": {
+        "baseURL": "https://api.lemonade.ai/v1",
+        "apiKey": "{env:LEMONADE_API_KEY}"
+      },
+      "models": {
+        "gpt-4": {
+          "name": "GPT-4"
+        },
+        "claude-3": {
+          "name": "Claude 3"
+        },
+        "mixtral-8x7b": {
+          "name": "Mixtral 8x7B"
+        }
+      }
+    }
+  },
+  "permission": {
+    "read": "allow",
+    "edit": "ask",
+    "bash": "ask"
+  }
+}
