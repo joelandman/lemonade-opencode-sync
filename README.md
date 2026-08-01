@@ -1,65 +1,53 @@
 # Lemonade Dynamic Model Access for OpenCode
 
-This plugin enables dynamic access to Lemonade's models in OpenCode without hard-coding each model in the configuration file.
+Automatically loads the model list from one or more remote
+[Lemonade](https://lemonade-server.ai) servers into
+[OpenCode](https://opencode.ai), so models never need to be hard-coded in
+`opencode.json`.
 
-## Features
+## How it works
 
-- Dynamic model discovery from Lemonade's API
-- Automatic model refresh capability
-- Command-line interface for model management
-- Integration with OpenCode's permission system
+- `opencode.json` declares one provider entry per Lemonade server (using the
+  `@ai-sdk/openai-compatible` adapter) with the server's base URL and an
+  empty `models` map.
+- `lemonade-models.js` is an OpenCode plugin. Its `config` hook runs at
+  OpenCode startup, fetches `GET <baseURL>/models` from every provider named
+  `lemonade` or `lemonade-*`, and injects the downloaded models into the
+  config — including context window size and tool-calling / reasoning /
+  vision capabilities derived from the server's model labels.
+
+Restart OpenCode to pick up models added to or removed from the server.
 
 ## Installation
 
-1. Create the plugin directory:
-   ```bash
-   mkdir -p ~/.config/opencode/plugins
-   ```
+```bash
+./setup.sh --host=hal9k:13305
+```
 
-2. Copy the plugin file to the plugins directory:
-   ```bash
-   cp /path/to/lemonade-models.js ~/.config/opencode/plugins/
-   ```
+- `--host=hostname[:port]` is repeatable for multiple servers (default port
+  13305, default host `localhost:13305`). The first host becomes provider
+  `lemonade`; additional hosts become `lemonade-<hostname>`.
+- `--api-key=...` is optional; Lemonade does not require one by default. If
+  used, also `export LEMONADE_API_KEY=...` in your shell profile so OpenCode
+  can see it.
 
-3. Set your Lemonade API key:
-   ```bash
-   export LEMONADE_API_KEY="your-api-key-here"
-   ```
-
-4. Configure OpenCode to use the plugin by adding to your opencode.json:
-   ```json
-   {
-     "plugin": ["lemonade-models"]
-   }
-   ```
+The script installs the plugin to `~/.config/opencode/plugins/`, backs up any
+existing `~/.config/opencode/opencode.json`, and writes a new one.
 
 ## Usage
 
-### Refresh Models
-To refresh the model list from Lemonade's API:
-```
-/lemonade.refresh-models
-```
+Start OpenCode and pick a model with `/models` — the Lemonade models appear
+under the provider name (e.g. "Lemonade (hal9k)"). To verify from the shell:
 
-### List Available Models
-To see all available models:
-```
-/lemonade.list-models
-```
-
-### Get Model Information
-To get information about a specific model:
-```
-/lemonade.model-info --modelId lemonade/gpt-4
-```
-
-## Configuration
-
-Set your Lemonade API key in an environment variable:
 ```bash
-export LEMONADE_API_KEY="your-api-key-here"
+opencode models | grep -i lemonade
 ```
 
-## Security
+## Uninstall
 
-This plugin respects OpenCode's permission system. By default, it requires approval for file operations and bash commands.
+```bash
+./uninstall.sh
+```
+
+Removes the plugin and restores the most recent configuration backup made by
+`setup.sh` (or removes the generated config if no backup exists).

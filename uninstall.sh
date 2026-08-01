@@ -12,10 +12,16 @@ else
     echo "Lemonade models plugin not found"
 fi
 
-# Remove the configuration file
+# Remove the configuration file, restoring the most recent pre-setup backup if one exists
 if [ -f ~/.config/opencode/opencode.json ]; then
-    rm ~/.config/opencode/opencode.json
-    echo "Removed OpenCode configuration"
+    BACKUP=$(ls -1t ~/.config/opencode/opencode.json.bak.* 2>/dev/null | head -1)
+    if [ -n "$BACKUP" ]; then
+        mv "$BACKUP" ~/.config/opencode/opencode.json
+        echo "Restored previous OpenCode configuration from $(basename "$BACKUP")"
+    else
+        rm ~/.config/opencode/opencode.json
+        echo "Removed OpenCode configuration"
+    fi
 else
     echo "OpenCode configuration not found"
 fi

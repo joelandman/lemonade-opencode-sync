@@ -1,138 +1,75 @@
-// Lemonade Models Plugin
-// This plugin dynamically configures OpenCode with Lemonade's available models
-// without hardcoding each model in the configuration file
+// Lemonade Models Plugin for OpenCode
+//
+// At startup, fetches the model list from each Lemonade server declared in
+// opencode.json (any provider whose key is "lemonade" or starts with
+// "lemonade-") and injects the models into that provider's config. Models
+// therefore never need to be hard-coded; restart OpenCode to pick up changes.
 
-export const LemonadeModelsPlugin = async ({ project, client, $, directory, worktree }) => {
-  // Store the list of available models
-  let availableModels = [];
-  
-  // Function to fetch models from Lemonade API
-  const fetchLemonadeModels = async (host = null) => {
-    try {
-      // In a real implementation, this would call Lemonade's API
-      // For demonstration, using mock data
-      const mockModels = [
-        {
-          id: "lemonade/gpt-4",
-          name: "GPT-4",
-          provider: "lemonade",
-          enabled: true,
-          description: "OpenAI GPT-4 model"
-        },
-        {
-          id: "lemonade/claude-3",
-          name: "Claude 3",
-          provider: "lemonade",
-          enabled: true,
-          description: "Anthropic Claude 3 model"
-        },
-        {
-          id: "lemonade/mixtral-8x7b",
-          name: "Mixtral 8x7B",
-          provider: "lemonade",
-          enabled: true,
-          description: "Mistral Mixtral 8x7B model"
-        },
-        {
-          id: "lemonade/gemini-pro",
-          name: "Gemini Pro",
-          provider: "lemonade",
-          enabled: true,
-          description: "Google Gemini Pro model"
-        }
-      ];
-      
-      // In a real implementation, you would replace this with:
-      // const baseUrl = host ? `http://${host}` : 'https://api.lemonade.ai/v1';
-      // const response = await fetch(`${baseUrl}/models`, {
-      //   headers: {
-      //     'Authorization': `Bearer ${process.env.LEMONADE_API_KEY}`
-      //   }
-      // });
-      // const models = await response.json();
-      
-      return mockModels;
-    } catch (error) {
-      console.error('Failed to fetch Lemonade models:', error);
-      return [];
+const FETCH_TIMEOUT_MS = 5000
+
+// Lemonade caps generation independently of context; keep a sane default so
+// OpenCode doesn't request the full context window as output.
+const MAX_OUTPUT_TOKENS = 32768
+
+const resolveApiKey = (options) => {
+  const key = options?.apiKey
+  // "{env:VAR}" placeholders are normally substituted before plugins run, but
+  // fall back to the environment if one survives unresolved.
+  if (key && !key.startsWith("{env:")) return key
+  return process.env.LEMONADE_API_KEY
+}
+
+const fetchModels = async (baseURL, apiKey) => {
+  const headers = { Accept: "application/json" }
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+  const url = `${baseURL.replace(/\/+$/, "")}/models`
+  const res = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+  if (!res.ok) throw new Error(`GET ${url} returned HTTP ${res.status}`)
+  const body = await res.json()
+  if (!Array.isArray(body?.data)) throw new Error(`GET ${url} returned no model list`)
+  return body.data
+}
+
+const toModelConfig = (model) => {
+  const labels = model.labels ?? []
+  const entry = {
+    name: model.id,
+    tool_call: labels.includes("tool-calling"),
+    reasoning: labels.includes("reasoning"),
+    attachment: labels.includes("vision"),
+    temperature: true,
+    cost: { input: 0, output: 0 },
+  }
+  if (typeof model.max_context_window === "number") {
+    entry.limit = {
+      context: model.max_context_window,
+      output: Math.min(model.max_context_window, MAX_OUTPUT_TOKENS),
     }
-  };
-  
-  // Function to refresh model list
-  const refreshModels = async (host = null) => {
-    try {
-      const models = await fetchLemonadeModels(host);
-      availableModels = models;
-      return models;
-    } catch (error) {
-      console.error('Failed to refresh models:', error);
-      return availableModels;
-    }
-  };
-  
-  // Initialize the plugin
-  await refreshModels();
-  
+  }
+  return entry
+}
+
+export const LemonadeModelsPlugin = async () => {
   return {
-    // Tool to refresh model list
-    "lemonade.refresh-models": {
-      description: "Refresh available Lemonade models from the API",
-      async execute(args, context) {
+    config: async (config) => {
+      for (const [providerID, provider] of Object.entries(config.provider ?? {})) {
+        if (providerID !== "lemonade" && !providerID.startsWith("lemonade-")) continue
+        const baseURL = provider.options?.baseURL
+        if (!baseURL) continue
+
         try {
-          let host = null;
-          if (args && args.host) {
-            host = args.host;
+          const list = await fetchModels(baseURL, resolveApiKey(provider.options))
+          const models = {}
+          for (const model of list) {
+            if (model.downloaded === false) continue
+            models[model.id] = toModelConfig(model)
           }
-          const models = await refreshModels(host);
-          return `Model list refreshed. Found ${models.length} models.`;
+          // Models declared explicitly in opencode.json win over fetched ones.
+          provider.models = { ...models, ...(provider.models ?? {}) }
         } catch (error) {
-          return `Failed to refresh models: ${error.message}`;
+          console.error(`lemonade-models: could not fetch models for provider "${providerID}" from ${baseURL}: ${error.message}`)
         }
       }
     },
-    
-    // Tool to get available models
-    "lemonade.list-models": {
-      description: "List all available Lemonade models",
-      async execute(args, context) {
-        try {
-          const models = availableModels;
-          if (models.length === 0) {
-            return "No models available. Please refresh the model list.";
-          }
-          
-          let response = "Available Lemonade models:\n";
-          for (const model of models) {
-            response += `- ${model.name} (${model.id})\n`;
-          }
-          return response;
-        } catch (error) {
-          return `Failed to list models: ${error.message}`;
-        }
-      }
-    },
-    
-    // Tool to get model information
-    "lemonade.model-info": {
-      description: "Get information about a specific Lemonade model",
-      args: {
-        modelId: {
-          type: "string",
-          description: "The model ID to get information about"
-        }
-      },
-      async execute(args, context) {
-        try {
-          const model = availableModels.find(m => m.id === args.modelId);
-          if (!model) {
-            return `Model ${args.modelId} not found.`;
-          }
-          
-          return `Model: ${model.name}\nID: ${model.id}\nProvider: ${model.provider}\nDescription: ${model.description}`;
-        } catch (error) {
-          return `Failed to get model info: ${error.message}`;
-        }
-      }
-    }
-  };
-};
+  }
+}

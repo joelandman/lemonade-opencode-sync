@@ -1,95 +1,124 @@
 #!/bin/bash
 
 # Lemonade OpenCode Dynamic Model Setup Script
+#
+# Installs the lemonade-models plugin and writes an OpenCode config with one
+# provider entry per Lemonade server. The plugin fetches each server's model
+# list at OpenCode startup, so models are never hard-coded here.
 
-echo "Setting up Lemonade dynamic model access for OpenCode..."
+set -euo pipefail
 
-# Parse command line arguments
-HOSTS=""
-API_KEY=""
+CONFIG_DIR="${HOME}/.config/opencode"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+HOSTS=()
+API_KEY="${LEMONADE_API_KEY:-}"
+
+usage() {
+    echo "Usage: ./setup.sh [--host=hostname[:port]] [--host=...] [--api-key=key]"
+    echo ""
+    echo "  --host     Lemonade server (repeatable). Default port 13305."
+    echo "             Defaults to localhost:13305 if not given."
+    echo "  --api-key  Optional API key (Lemonade does not require one by default)."
+}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --host=*)
-            HOSTS="${HOSTS} ${1#*=}"
+            HOSTS+=("${1#*=}")
             shift
             ;;
         --api-key=*)
             API_KEY="${1#*=}"
             shift
             ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
         *)
-            echo "Unknown option $1"
+            echo "Unknown option: $1"
+            usage
             exit 1
             ;;
     esac
 done
 
-# Check if Lemonade API key is set
-if [ -z "$API_KEY" ] && [ -z "$LEMONADE_API_KEY" ]; then
-    echo "Please provide your Lemonade API key:"
-    echo "Option 1: Set environment variable"
-    echo "  export LEMONADE_API_KEY=\"your-api-key-here\""
-    echo ""
-    echo "Option 2: Use --api-key argument"
-    echo "  ./setup.sh --api-key=\"your-api-key-here\" [--host=hostname:port] [--host=hostname2:port2]"
-    echo ""
-    echo "You can add this to your ~/.bashrc or ~/.zshrc file to make it permanent."
-    exit 1
+[[ ${#HOSTS[@]} -eq 0 ]] && HOSTS=("localhost:13305")
+
+echo "Setting up Lemonade dynamic model access for OpenCode..."
+
+# Verify each server is reachable and report its model count
+declare -A BASE_URLS
+for HOST in "${HOSTS[@]}"; do
+    [[ "$HOST" == *:* ]] || HOST="${HOST}:13305"
+    BASE_URL="http://${HOST}/api/v1"
+    echo -n "Checking ${BASE_URL} ... "
+    COUNT=$(curl -sf --connect-timeout 5 "${BASE_URL}/models" \
+        | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]))' 2>/dev/null) \
+        || { echo "UNREACHABLE (continuing; the plugin will retry at OpenCode startup)"; COUNT="?"; }
+    [[ "$COUNT" != "?" ]] && echo "ok, ${COUNT} models"
+    BASE_URLS["$HOST"]="$BASE_URL"
+done
+
+# Install the plugin (OpenCode auto-loads *.js from this directory)
+mkdir -p "${CONFIG_DIR}/plugins"
+cp "${SCRIPT_DIR}/lemonade-models.js" "${CONFIG_DIR}/plugins/"
+echo "Installed plugin to ${CONFIG_DIR}/plugins/lemonade-models.js"
+
+# Back up any existing config before overwriting
+if [[ -f "${CONFIG_DIR}/opencode.json" ]]; then
+    BACKUP="${CONFIG_DIR}/opencode.json.bak.$(date +%Y%m%d%H%M%S)"
+    cp "${CONFIG_DIR}/opencode.json" "$BACKUP"
+    echo "Backed up existing config to ${BACKUP}"
 fi
 
-# Set API key
-if [ -n "$API_KEY" ]; then
-    export LEMONADE_API_KEY="$API_KEY"
-fi
+# Write the config: first host becomes provider "lemonade", extras "lemonade-<host>"
+python3 - "${CONFIG_DIR}/opencode.json" "${HOSTS[@]}" <<'PYEOF'
+import json, sys
 
-# Create plugins directory if it doesn't exist
-mkdir -p ~/.config/opencode/plugins
-
-# Copy the plugin file
-cp lemonade-models.js ~/.config/opencode/plugins/
-
-# Create configuration
-echo "Creating OpenCode configuration..."
-mkdir -p ~/.config/opencode
-cat > ~/.config/opencode/opencode.json << EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "plugin": ["lemonade-models"],
-  "provider": {
-    "lemonade": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Lemonade Models",
-      "options": {
-        "baseURL": "https://api.lemonade.ai/v1",
-        "apiKey": "{env:LEMONADE_API_KEY}"
-      }
+config_path, hosts = sys.argv[1], sys.argv[2:]
+providers = {}
+for i, host in enumerate(hosts):
+    if ":" not in host:
+        host += ":13305"
+    name = host.split(":")[0]
+    key = "lemonade" if i == 0 else "lemonade-" + name.replace(".", "-")
+    providers[key] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": f"Lemonade ({name})",
+        "options": {
+            "baseURL": f"http://{host}/api/v1",
+            "apiKey": "{env:LEMONADE_API_KEY}",
+        },
+        "models": {},
     }
-  },
-  "permission": {
-    "read": "allow",
-    "edit": "ask",
-    "bash": "ask"
-  }
-}
-EOF
 
+config = {
+    "$schema": "https://opencode.ai/config.json",
+    "provider": providers,
+    "permission": {
+        "read": "allow",
+        "edit": "ask",
+        "bash": "ask",
+    },
+}
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PYEOF
+echo "Wrote ${CONFIG_DIR}/opencode.json"
+
+echo ""
 echo "Setup complete!"
 echo ""
-echo "To use the Lemonade models plugin:"
-echo "1. Ensure your LEMONADE_API_KEY is set in your environment"
-echo "2. Restart OpenCode"
-echo "3. Use the following commands:"
-echo "   - /lemonade.refresh-models (refresh model list)"
-echo "   - /lemonade.list-models (list available models)"
-echo "   - /lemonade.model-info --modelId [model-id] (get model info)"
-echo ""
-echo "Configuration details:"
-if [ -n "$HOSTS" ]; then
-    echo "Connected to hosts:"
-    IFS=' ' read -ra HOST_ARRAY <<< "$HOSTS"
-    for HOST in "${HOST_ARRAY[@]}"; do
-        echo "  - $HOST"
-    done
+echo "Notes:"
+echo "  - Restart OpenCode; the plugin fetches the model list at startup."
+echo "  - Select a model inside OpenCode with /models, or verify from the"
+echo "    shell with: opencode models | grep lemonade"
+if [[ -n "$API_KEY" ]]; then
+    echo "  - Export LEMONADE_API_KEY in your shell profile so OpenCode can see it:"
+    echo "      export LEMONADE_API_KEY=\"...\""
+else
+    echo "  - No API key configured (Lemonade does not require one by default)."
 fi
-echo "API Key: $(echo $LEMONADE_API_KEY | sed 's/./X/g' | sed 's/XXX.*/XXXX/')..."
