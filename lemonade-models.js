@@ -40,12 +40,19 @@ const toModelConfig = (model) => {
     temperature: true,
     cost: { input: 0, output: 0 },
   }
-  if (typeof model.max_context_window === "number") {
+
+  const contextWindow =
+    typeof model.recipe_options?.ctx_size === "number"
+      ? model.recipe_options.ctx_size
+      : model.max_context_window
+
+  if (typeof contextWindow === "number") {
     entry.limit = {
-      context: model.max_context_window,
-      output: Math.min(model.max_context_window, MAX_OUTPUT_TOKENS),
+      context: contextWindow,
+      output: Math.min(contextWindow, MAX_OUTPUT_TOKENS),
     }
   }
+
   return entry
 }
 
